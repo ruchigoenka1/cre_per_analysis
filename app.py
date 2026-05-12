@@ -3,11 +3,14 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-st.set_page_config(layout="wide", page_title="Trade Credit & Inventory Simulator")
+st.set_page_config(layout="wide", page_title="Cash Flow Simulation")
 
 # --- Sidebar Inputs ---
 with st.sidebar:
-    st.header("Simulation Settings")
+    st.header("Simulation Parameters")
+    # A button to trigger a rerun with a new random seed
+    generate_new = st.button("🔄 Generate New Demand Pattern")
+    
     duration = st.number_input("Duration (Days)", value=180)
     
     st.subheader("Inventory Policy")
@@ -31,7 +34,7 @@ with st.sidebar:
 
 # --- Simulation Logic ---
 def run_simulation():
-    # Initial setup
+    # Initial setup: Start at 1.25 * ROP for stability
     inventory = int(1.25 * rop)
     cash_balance = 0
     total_holding_costs = 0
@@ -50,42 +53,35 @@ def run_simulation():
         stock_out = daily_demand - sales_units
         inventory -= sales_units
         
-        # 2. Track Receivables (Revenue is recognized on payment_day)
+        # 2. Receivables (Revenue on payment_day)
         revenue_amount = sales_units * selling_price
         if revenue_amount > 0:
             pending_receivables.append({'payment_day': day + customer_credit, 'amount': revenue_amount})
             
-        # 3. Handle Inventory Arrivals
+        # 3. Deliveries
         for o in list(pipeline_orders):
             if o['delivery_day'] == day:
                 inventory += o['qty']
             
-        # 4. Ordering Logic (ROP)
+        # 4. Ordering (ROP)
         current_pipeline = sum(o['qty'] for o in pipeline_orders if o['delivery_day'] > day)
         if (inventory + current_pipeline) <= rop:
             delivery_day = day + lead_time
             payment_day = delivery_day + supplier_credit
-            cost_of_goods = order_qty * unit_cost
-            
             pipeline_orders.append({
                 'delivery_day': delivery_day, 
                 'qty': order_qty, 
                 'payment_day': payment_day,
-                'payable_amount': cost_of_goods
+                'payable_amount': order_qty * unit_cost
             })
             total_ordering_costs += order_cost_fixed
             
-        # 5. Financial Settlement
-        # Receivables: Money entering the cash balance today
+        # 5. Cash Flow (Trade focus only)
         receivable_today = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
-        
-        # Payables: Money exiting the cash balance today
         payable_today = sum(o['payable_amount'] for o in pipeline_orders if o['payment_day'] == day)
-        
-        # Update Cash Balance (Excluding holding/ordering costs as requested)
         cash_balance += (receivable_today - payable_today)
         
-        # Update Cumulative Holding Cost (Tracked separately)
+        # 6. Holding Costs
         current_day_holding = inventory * daily_holding_rate
         total_holding_costs += current_day_holding
         
@@ -103,28 +99,35 @@ def run_simulation():
 
 df_res, total_hold, total_order = run_simulation()
 
-# --- Dashboard ---
-st.title("🚜 Inventory & Trade Cash Flow Simulation")
+# --- Dashboard Layout ---
+st.title("📦 AI Inventory & Cash Flow Auditor")
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Avg Inventory", f"{int(df_res['Inventory'].mean())} units")
-c2.metric("Stock-out Days", f"{df_res['Stockout'].sum()} days")
-c3.metric("Total Holding Cost", f"${total_hold:,.2f}")
-c4.metric("Total Ordering Cost", f"${total_order:,.2f}")
+# KPI Metrics
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Avg Inventory", f"{int(df_res['Inventory'].mean())} units")
+m2.metric("Stock-out Days", f"{df_res['Stockout'].sum()} days")
+m3.metric("Total Holding Cost", f"${total_hold:,.2f}")
+m4.metric("Total Ordering Cost", f"${total_order:,.2f}")
 
-# --- Visualization ---
-st.subheader("Inventory Levels & Net Cash Position")
-# Using a dual-axis style chart or side-by-side
-fig = px.line(df_res, x="Day", y=["Inventory", "Cash_Balance"], 
-              labels={"value": "Level / Amount", "variable": "Metric"},
-              color_discrete_map={"Inventory": "#0047AB", "Cash_Balance": "#2E8B57"})
-st.plotly_chart(fig, use_container_width=True)
+st.divider()
 
-# --- Data Table ---
+# Separate Graphs
+col_left, col_right = st.columns(2)
+
+with col_left:
+    st.subheader("Inventory Levels")
+    fig_inv = px.line(df_res, x="Day", y="Inventory", 
+                      line_shape="hv", # Step-line style for inventory
+                      color_discrete_sequence=['#0047AB'])
+    fig_inv.add_hline(y=rop, line_dash="dot", line_color="red", annotation_text="ROP")
+    st.plotly_chart(fig_inv, use_container_width=True)
+
+with col_right:
+    st.subheader("Cash Flow (Trade Balance)")
+    fig_cash = px.area(df_res, x="Day", y="Cash_Balance", 
+                       color_discrete_sequence=['#2E8B57'])
+    st.plotly_chart(fig_cash, use_container_width=True)
+
+# Data Table
 st.subheader("📋 Daily Simulation Logs")
-# Formatting the table for clarity
-st.dataframe(
-    df_res[["Day", "Inventory", "Receivable", "Payable", "Cash_Balance", "Daily_Holding_Cost", "Stockout"]], 
-    use_container_width=True, 
-    hide_index=True
-)
+st.dataframe(df_res, use_container_width=True, hide_index=True)
