@@ -24,7 +24,8 @@ with st.sidebar:
     unit_cost = st.number_input("Unit Cost ($)", value=50)
     selling_price = st.number_input("Selling Price ($)", value=90)
     order_cost_fixed = st.number_input("Ordering Cost (per order) ($)", value=150)
-    holding_cost_annual = st.number_input("Annual Holding Cost per Unit ($)", value=10.0)
+    # Updated to Percentage Input
+    holding_cost_pct = st.number_input("Annual Holding Cost (%)", value=20.0) / 100
     
     st.subheader("Credit Terms")
     supplier_credit = st.number_input("Supplier Credit (Days)", value=30)
@@ -33,11 +34,13 @@ with st.sidebar:
 
 # --- EOQ and Financial Math ---
 annual_demand = avg_demand * 365
-# EOQ Formula
-calculated_eoq = math.sqrt((2 * annual_demand * order_cost_fixed) / holding_cost_annual)
+# Holding cost per unit per year for EOQ formula
+h_cost_per_unit = unit_cost * holding_cost_pct
+
+calculated_eoq = math.sqrt((2 * annual_demand * order_cost_fixed) / h_cost_per_unit)
 
 def calc_total_annual_cost(q):
-    annual_holding = (q / 2) * holding_cost_annual
+    annual_holding = (q / 2) * h_cost_per_unit
     annual_ordering = (annual_demand / q) * order_cost_fixed
     return annual_holding + annual_ordering
 
@@ -47,14 +50,14 @@ savings = cost_current - cost_eoq
 
 # --- Simulation Engine ---
 def run_simulation():
-    # Starting balance logic: 1.25 * production trigger (ROP)
+    # Start balance: 1.25 * ROP for stability
     inventory = int(1.25 * rop)
     cash_balance, ar_balance, ap_balance = 0, 0, 0
     pipeline_orders, pending_receivables, history = [], [], []
-    daily_holding_rate = holding_cost_annual / 365
+    daily_holding_rate = h_cost_per_unit / 365
     
     for day in range(duration):
-        # 1. MORNING: Shipments arrive first (User assumption)
+        # 1. MORNING: Shipments arrive (Assumption: Start of day)
         for o in list(pipeline_orders):
             if o['delivery_day'] == day:
                 inventory += o['qty']
@@ -65,10 +68,11 @@ def run_simulation():
         
         # 3. Fulfillment & Stockout Logic
         sales_units = min(inventory, daily_demand)
+        # Stockout if demand exceeds available inventory after arrivals
         stock_out_flag = 1 if daily_demand > (inventory + sales_units) else 0
         inventory -= sales_units
         
-        # 4. Book AR
+        # 4. Book AR (Accrual logic)
         sale_value = sales_units * selling_price
         if sale_value > 0:
             ar_balance += sale_value
@@ -86,7 +90,7 @@ def run_simulation():
                 'payable_amount': manual_order_qty * unit_cost
             })
             
-        # 6. Settlement
+        # 6. Settlement (Cash Movements)
         payment_received = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
         ar_balance -= payment_received
         
@@ -139,20 +143,7 @@ r2.metric("Maximum Inventory", f"{df_res['Inventory'].max():.1f}")
 r3.metric("Minimum Working Capital", f"{df_res['Working Capital'].min():.1f}")
 r4.metric("Maximum Working Capital", f"{df_res['Working Capital'].max():.1f}")
 
-# Section 3: Inventory Cost Metrics
-st.subheader("Inventory Cost Metrics")
-c1, c2, c3 = st.columns(3)
-c1.metric("Total Holding Cost", f"{total_holding_cost:.1f}")
-c2.metric("Total Ordering Cost", f"{total_ordering_cost}")
-c3.metric("Total Inventory Cost", f"{(total_holding_cost + total_ordering_cost):.1f}")
-
-# Section 4: EOQ
-st.subheader("EOQ")
-e1, e2 = st.columns(2)
-e1.metric("Economic Order Quantity", f"{calculated_eoq:.1f}")
-e2.metric("Selected Order Quantity", f"{manual_order_qty}")
-
-# Section 5: Cost Comparison
+# Section 3: Cost Comparison (Reference: Screenshot 2026-05-13 at 5.24.36 PM.jpg)
 st.subheader("Cost Comparison")
 comp1, comp2, comp3 = st.columns(3)
 comp1.metric("Cost with Current Policy", f"{cost_current:.1f}")
@@ -164,12 +155,11 @@ st.divider()
 # --- Visual Analysis ---
 st.subheader("Visual Analysis")
 
-# Inventory Levels
+# Inventory Levels with Stockout markers at bottom for visibility
 fig_inv = px.line(df_res, x="Day", y="Inventory", title="Inventory Levels", 
                   height=600, color_discrete_sequence=['#0047AB'])
 fig_inv.add_hline(y=rop, line_dash="dash", line_color="red", annotation_text=f"ROP: {rop}")
 
-# Stockout Markers
 stockouts = df_res[df_res['Stockout'] == 1]
 if not stockouts.empty:
     fig_inv.add_scatter(x=stockouts["Day"], y=stockouts["Inventory"], mode="markers", 
