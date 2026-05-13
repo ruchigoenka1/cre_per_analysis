@@ -4,151 +4,148 @@ import numpy as np
 import plotly.express as px
 import math
 
-st.set_page_config(layout="wide", page_title="Inventory & Working Capital Auditor")
+st.set_page_config(layout="wide", page_title="Inventory KPI Auditor")
 
 # --- Sidebar Inputs ---
 with st.sidebar:
-    st.header("Simulation Control")
-    # In Streamlit, any widget change triggers a rerun. 
-    # This button now simply acts as a trigger to refresh the random seed.
-    generate_btn = st.button("🔄 Run New Simulation")
+    st.header("Simulation Settings")
+    if st.button("🔄 Run New Simulation"):
+        st.rerun()
     
     st.subheader("Inventory Policy")
-    # Use the calculated EOQ as a suggested value
-    use_eoq = st.checkbox("Use Calculated EOQ for Order Qty", value=False)
+    rop = st.number_input("Reorder Point", value=150)
+    manual_order_qty = st.number_input("Selected Order Quantity", value=300)
     
-    rop = st.number_input("Reorder Point (Units)", value=150)
-    manual_order_qty = st.number_input("Manual Order Quantity", value=300)
-    
-    st.subheader("Cost & Demand Inputs")
+    st.subheader("Cost & Demand")
     avg_demand = st.number_input("Avg. Daily Demand", value=20)
     std_demand = st.number_input("Demand Variability", value=5)
     lead_time = st.number_input("Lead Time (Days)", value=7)
     unit_cost = st.number_input("Unit Cost ($)", value=50)
-    selling_price = st.number_input("Selling Price ($)", value=90)
-    order_cost_fixed = st.number_input("Ordering Cost (per order) ($)", value=150)
-    holding_cost_annual = st.number_input("Annual Holding Cost per Unit ($)", value=10.0)
+    order_cost_fixed = st.number_input("Ordering Cost ($)", value=150)
+    holding_cost_annual = st.number_input("Annual Holding Cost/Unit ($)", value=10.0)
     
     st.subheader("Credit Terms")
     supplier_credit = st.number_input("Supplier Credit (Days)", value=30)
     customer_credit = st.number_input("Customer Credit (Days)", value=15)
-    duration = st.number_input("Duration (Days)", value=180)
+    selling_price = st.number_input("Selling Price ($)", value=90)
+    duration = 180
 
-# --- EOQ Calculation ---
+# --- Calculations ---
 annual_demand = avg_demand * 365
-# EOQ Formula: sqrt((2 * Annual Demand * Ordering Cost) / Holding Cost)
-calculated_eoq = math.sqrt((2 * annual_demand * order_cost_fixed) / holding_cost_annual)
-order_qty = int(calculated_eoq) if use_eoq else manual_order_qty
+# EOQ Calculation
+eoq = math.sqrt((2 * annual_demand * order_cost_fixed) / holding_cost_annual)
 
+# Cost Comparison Logic
+def calc_total_cost(q):
+    annual_holding = (q / 2) * holding_cost_annual
+    annual_ordering = (annual_demand / q) * order_cost_fixed
+    return annual_holding + annual_ordering
+
+cost_current = calc_total_cost(manual_order_qty)
+cost_eoq = calc_total_cost(eoq)
+savings = cost_current - cost_eoq
+
+# --- Simulation Engine ---
 def run_simulation():
-    # Initial state
     inventory = int(1.25 * rop)
-    cash_balance = 0
-    ar_balance = 0 
-    ap_balance = 0 
-    
-    pipeline_orders = [] 
-    pending_receivables = [] 
-    history = []
-    
+    cash_balance, ar_balance, ap_balance = 0, 0, 0
+    pipeline_orders, pending_receivables, history = [], [], []
     daily_holding_rate = holding_cost_annual / 365
-    total_ordering_paid = 0
-    total_holding_paid = 0
     
     for day in range(duration):
-        # 1. Demand & Sales
         daily_demand = max(0, int(np.random.normal(avg_demand, std_demand)))
         sales_units = min(inventory, daily_demand)
         inventory -= sales_units
         
-        # 2. Book AR
+        # AR & Cash In
         sale_value = sales_units * selling_price
         if sale_value > 0:
             ar_balance += sale_value
             pending_receivables.append({'payment_day': day + customer_credit, 'amount': sale_value})
-            
-        # 3. Deliveries & Book AP
+        
+        payment_received = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
+        ar_balance -= payment_received
+        
+        # Deliveries & AP
         for o in list(pipeline_orders):
             if o['delivery_day'] == day:
                 inventory += o['qty']
                 ap_balance += o['payable_amount']
-            
-        # 4. Ordering (ROP Trigger)
+        
+        # Ordering
         current_pipeline = sum(o['qty'] for o in pipeline_orders if o['delivery_day'] > day)
         if (inventory + current_pipeline) <= rop:
-            delivery_day = day + lead_time
-            payment_day = delivery_day + supplier_credit
             pipeline_orders.append({
-                'delivery_day': delivery_day, 
-                'qty': order_qty, 
-                'payment_day': payment_day,
-                'payable_amount': order_qty * unit_cost
+                'delivery_day': day + lead_time, 
+                'qty': manual_order_qty, 
+                'payment_day': day + lead_time + supplier_credit,
+                'payable_amount': manual_order_qty * unit_cost
             })
-            total_ordering_paid += order_cost_fixed
             
-        # 5. Settlement (Cash Movements)
-        payment_received = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
-        ar_balance -= payment_received
-        
+        # AP & Cash Out
         payment_made = sum(o['payable_amount'] for o in pipeline_orders if o['payment_day'] == day)
         ap_balance -= payment_made
         
-        # 6. Expenses
-        current_day_holding = inventory * daily_holding_rate
-        total_holding_paid += current_day_holding
-        
         cash_balance += (payment_received - payment_made)
-        
-        # Working Capital Calculation: AR + Inventory Value - AP
         working_capital = ar_balance + (inventory * unit_cost) - ap_balance
         
         history.append({
             "Day": day,
-            "Demand": daily_demand,
             "Inventory": inventory,
-            "Outstanding_AR": ar_balance,
-            "Outstanding_AP": ap_balance,
             "Working_Capital": working_capital,
-            "Payment_Received": payment_received,
-            "Payment_Made": payment_made,
-            "Cash_Balance": cash_balance,
-            "Daily_Holding_Cost": current_day_holding
+            "Stockout": 1 if daily_demand > sales_units else 0,
+            "Daily_Hold": inventory * daily_holding_rate
         })
         
-    return pd.DataFrame(history), total_holding_paid, total_ordering_paid
+    return pd.DataFrame(history), len([o for o in pipeline_orders]) * order_cost_fixed
 
-df_res, total_hold, total_order = run_simulation()
+df_res, total_ordering_cost = run_simulation()
+total_holding_cost = df_res['Daily_Hold'].sum()
 
-# --- Dashboard ---
-st.title("🚜 Supply Chain Working Capital Diagnostic")
+# --- KPI Section (Modeled after Screenshot 2026-05-13 at 5.24.36 PM.jpg) ---
+st.title("Inventory Diagnostics Dashboard")
 
-# KPI Metrics
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Calculated EOQ", f"{int(calculated_eoq)} units")
-c2.metric("Avg Working Capital", f"${df_res['Working_Capital'].mean():,.0f}")
-c3.metric("Total Holding Cost", f"${total_hold:,.0f}")
-c4.metric("Total Ordering Cost", f"${total_order:,.0f}")
+# Row 1: Inventory KPIs
+st.subheader("Inventory KPIs")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Stockout Days", f"{df_res['Stockout'].sum()}")
+# Avg Age = Avg Inventory / Avg Daily Demand
+avg_inv = df_res['Inventory'].mean()
+k2.metric("Average Age of Inventory", f"{(avg_inv / avg_demand):.1f}")
+k3.metric("Average Inventory", f"{avg_inv:.1f}")
+k4.metric("Avg Working Capital", f"{df_res['Working_Capital'].mean():.1f}")
+
+# Row 2: Inventory Range
+st.subheader("Inventory Range")
+r1, r2, r3, r4 = st.columns(4)
+r1.metric("Minimum Inventory", f"{df_res['Inventory'].min():.1f}")
+r2.metric("Maximum Inventory", f"{df_res['Inventory'].max():.1f}")
+r3.metric("Minimum Working Capital", f"{df_res['Working_Capital'].min():.1f}")
+r4.metric("Maximum Working Capital", f"{df_res['Working_Capital'].max():.1f}")
+
+# Row 3: Inventory Cost Metrics
+st.subheader("Inventory Cost Metrics")
+c1, c2, c3 = st.columns(3)
+c1.metric("Total Holding Cost", f"{total_holding_cost:.1f}")
+c2.metric("Total Ordering Cost", f"{total_ordering_cost}")
+c3.metric("Total Inventory Cost", f"{(total_holding_cost + total_ordering_cost):.1f}")
+
+# Row 4: EOQ
+st.subheader("EOQ")
+e1, e2 = st.columns(2)
+e1.metric("Economic Order Quantity", f"{eoq:.1f}")
+e2.metric("Selected Order Quantity", f"{manual_order_qty}")
+
+# Row 5: Cost Comparison
+st.subheader("Cost Comparison")
+comp1, comp2, comp3 = st.columns(3)
+comp1.metric("Cost with Current Policy", f"{cost_current:.1f}")
+comp2.metric("Cost with EOQ", f"{cost_eoq:.1f}")
+comp3.metric("Savings Using EOQ", f"{savings:.1f}", delta=f"{savings:.1f}")
 
 st.divider()
 
-# --- Full Width Visualizations ---
-st.subheader("Working Capital Requirement (AR + Inventory - AP)")
-
-fig_wc = px.area(df_res, x="Day", y="Working_Capital", 
-                 color_discrete_sequence=['#FF8C00'], height=400)
-st.plotly_chart(fig_wc, use_container_width=True)
-
-st.subheader("Inventory Levels (Step Chart)")
-fig_inv = px.line(df_res, x="Day", y="Inventory", line_shape="hv", 
-                  color_discrete_sequence=['#0047AB'], height=400)
-fig_inv.add_hline(y=rop, line_dash="dot", line_color="red", annotation_text="Reorder Point")
-st.plotly_chart(fig_inv, use_container_width=True)
-
-st.subheader("Cumulative Cash Position")
-fig_cash = px.area(df_res, x="Day", y="Cash_Balance", 
-                   color_discrete_sequence=['#2E8B57'], height=400)
-st.plotly_chart(fig_cash, use_container_width=True)
-
-# --- Ledger ---
-with st.expander("Detailed Daily Transaction Ledger"):
-    st.dataframe(df_res, use_container_width=True, hide_index=True)
+# Charts
+st.subheader("Visual Analysis")
+st.plotly_chart(px.line(df_res, x="Day", y="Inventory", title="Inventory Levels", height=300), use_container_width=True)
+st.plotly_chart(px.area(df_res, x="Day", y="Working_Capital", title="Working Capital Trend", height=300), use_container_width=True)
