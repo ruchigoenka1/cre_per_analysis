@@ -33,6 +33,7 @@ with st.sidebar:
 
 # --- EOQ and Financial Math ---
 annual_demand = avg_demand * 365
+# EOQ Formula
 calculated_eoq = math.sqrt((2 * annual_demand * order_cost_fixed) / holding_cost_annual)
 
 def calc_total_annual_cost(q):
@@ -46,13 +47,14 @@ savings = cost_current - cost_eoq
 
 # --- Simulation Engine ---
 def run_simulation():
+    # Starting balance logic: 1.25 * production trigger (ROP)
     inventory = int(1.25 * rop)
     cash_balance, ar_balance, ap_balance = 0, 0, 0
     pipeline_orders, pending_receivables, history = [], [], []
     daily_holding_rate = holding_cost_annual / 365
     
     for day in range(duration):
-        # 1. MORNING: Shipments arrive first
+        # 1. MORNING: Shipments arrive first (User assumption)
         for o in list(pipeline_orders):
             if o['delivery_day'] == day:
                 inventory += o['qty']
@@ -63,10 +65,10 @@ def run_simulation():
         
         # 3. Fulfillment & Stockout Logic
         sales_units = min(inventory, daily_demand)
-        stock_out_flag = 1 if daily_demand > (inventory + sales_units) else 0 # Checked against morning total
+        stock_out_flag = 1 if daily_demand > (inventory + sales_units) else 0
         inventory -= sales_units
         
-        # 4. Book AR (Revenue on sale day)
+        # 4. Book AR
         sale_value = sales_units * selling_price
         if sale_value > 0:
             ar_balance += sale_value
@@ -84,7 +86,7 @@ def run_simulation():
                 'payable_amount': manual_order_qty * unit_cost
             })
             
-        # 6. Settlement (Cash Movements)
+        # 6. Settlement
         payment_received = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
         ar_balance -= payment_received
         
@@ -117,10 +119,10 @@ def run_simulation():
 df_res, total_ordering_cost = run_simulation()
 total_holding_cost = df_res['Daily Holding Cost'].sum()
 
-# --- DASHBOARD UI (Reference: Screenshot 2026-05-13 at 6.14.09 PM.png) ---
+# --- DASHBOARD UI ---
 st.title("Inventory Diagnostics & Working Capital Dashboard")
 
-# Row 1: Inventory KPIs
+# Section 1: Inventory KPIs
 st.subheader("Inventory KPIs")
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Stockout Days", f"{df_res['Stockout'].sum()}")
@@ -129,7 +131,7 @@ k3.metric("Average Inventory", f"{df_res['Inventory'].mean():.1f}")
 k4.metric("Avg Working Capital", f"{df_res['Working Capital'].mean():.1f}")
 k5.metric("Avg Inventory Working Capital", f"${df_res['Inventory Working Capital'].mean():,.1f}")
 
-# Row 2: Inventory Range
+# Section 2: Inventory Range
 st.subheader("Inventory Range")
 r1, r2, r3, r4 = st.columns(4)
 r1.metric("Minimum Inventory", f"{df_res['Inventory'].min():.1f}")
@@ -137,26 +139,43 @@ r2.metric("Maximum Inventory", f"{df_res['Inventory'].max():.1f}")
 r3.metric("Minimum Working Capital", f"{df_res['Working Capital'].min():.1f}")
 r4.metric("Maximum Working Capital", f"{df_res['Working Capital'].max():.1f}")
 
+# Section 3: Inventory Cost Metrics
+st.subheader("Inventory Cost Metrics")
+c1, c2, c3 = st.columns(3)
+c1.metric("Total Holding Cost", f"{total_holding_cost:.1f}")
+c2.metric("Total Ordering Cost", f"{total_ordering_cost}")
+c3.metric("Total Inventory Cost", f"{(total_holding_cost + total_ordering_cost):.1f}")
+
+# Section 4: EOQ
+st.subheader("EOQ")
+e1, e2 = st.columns(2)
+e1.metric("Economic Order Quantity", f"{calculated_eoq:.1f}")
+e2.metric("Selected Order Quantity", f"{manual_order_qty}")
+
+# Section 5: Cost Comparison
+st.subheader("Cost Comparison")
+comp1, comp2, comp3 = st.columns(3)
+comp1.metric("Cost with Current Policy", f"{cost_current:.1f}")
+comp2.metric("Cost with EOQ", f"{cost_eoq:.1f}")
+comp3.metric("Savings Using EOQ", f"{savings:.1f}", delta=f"{savings:.1f}")
+
 st.divider()
 
 # --- Visual Analysis ---
 st.subheader("Visual Analysis")
 
-# Inventory Levels with Stockout Markers
+# Inventory Levels
 fig_inv = px.line(df_res, x="Day", y="Inventory", title="Inventory Levels", 
                   height=600, color_discrete_sequence=['#0047AB'])
 fig_inv.add_hline(y=rop, line_dash="dash", line_color="red", annotation_text=f"ROP: {rop}")
 
+# Stockout Markers
 stockouts = df_res[df_res['Stockout'] == 1]
 if not stockouts.empty:
     fig_inv.add_scatter(x=stockouts["Day"], y=stockouts["Inventory"], mode="markers", 
                         name="Stockout", marker=dict(color="red", size=12, symbol="x"))
 
 st.plotly_chart(fig_inv, use_container_width=True)
-
-# Working Capital Trend
-st.plotly_chart(px.area(df_res, x="Day", y="Working Capital", title="Net Working Capital Trend (AR + Inv - AP)", 
-                        height=400, color_discrete_sequence=['#2E8B57']), use_container_width=True)
 
 with st.expander("Detailed Daily Transaction Ledger"):
     st.dataframe(df_res, use_container_width=True, hide_index=True)
