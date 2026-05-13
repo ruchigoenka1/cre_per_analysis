@@ -114,7 +114,7 @@ def run_simulation():
 df_res, total_ordering_cost = run_simulation()
 total_holding_cost = df_res['Daily Holding Cost'].sum()
 
-# --- DASHBOARD UI (Reference: Screenshot 2026-05-13 at 5.24.36 PM.jpg) ---
+# --- DASHBOARD UI ---
 st.title("Inventory Diagnostics & Working Capital Dashboard")
 
 # Row 1: Inventory KPIs
@@ -155,19 +155,21 @@ comp3.metric("Savings Using EOQ", f"{savings:.1f}", delta=f"{savings:.1f}")
 
 st.divider()
 
-# --- Visual Analysis Section (Reference: Screenshot 2026-05-13 at 5.26.10 PM.png) ---
+# --- Visual Analysis Section ---
 st.subheader("Visual Analysis")
 
-# Inventory Levels with ROP and Stockout Markers
+# Inventory Levels with ROP
 fig_inv = px.line(df_res, x="Day", y="Inventory", title="Inventory Levels", 
                   height=600, color_discrete_sequence=['#0047AB'])
 fig_inv.add_hline(y=rop, line_dash="dash", line_color="red", annotation_text=f"ROP: {rop}")
 
-# FIX: Plot stockouts at Y=0 (the bottom) (Reference: Screenshot 2026-05-13 at 5.32.55 PM.png)
+# FIX: Plot stockouts slightly above zero for visibility
 stockouts = df_res[df_res['Stockout'] == 1]
 if not stockouts.empty:
-    fig_inv.add_scatter(x=stockouts["Day"], y=[0] * len(stockouts), mode="markers", 
-                        name="Stockout", marker=dict(color="red", size=12, symbol="x-thin"))
+    fig_inv.add_trace(px.scatter(stockouts, x="Day", y=[5] * len(stockouts)).data[0])
+    fig_inv.update_traces(selector=dict(mode='markers'), 
+                          marker=dict(color="red", size=15, symbol="x"),
+                          name="Stockout Event")
 
 st.plotly_chart(fig_inv, use_container_width=True)
 
