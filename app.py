@@ -3,12 +3,11 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-st.set_page_config(layout="wide", page_title="Full-Width Cash Flow Simulator")
+st.set_page_config(layout="wide", page_title="Inventory & Cash Flow Simulator")
 
 # --- Sidebar Inputs ---
 with st.sidebar:
     st.header("Control Panel")
-    # Button to refresh demand
     if st.button("🔄 Generate New Demand Pattern"):
         st.rerun()
     
@@ -46,23 +45,25 @@ def run_simulation():
     daily_holding_rate = holding_cost_annual / 365
     
     for day in range(duration):
-        # 1. Demand & Sales
+        # 1. Demand Generation
         daily_demand = max(0, int(np.random.normal(avg_demand, std_demand)))
+        
+        # 2. Fulfill Sales
         sales_units = min(inventory, daily_demand)
         stock_out = daily_demand - sales_units
         inventory -= sales_units
         
-        # 2. Receivables (Customer Credit)
+        # 3. Track Receivables
         revenue_amount = sales_units * selling_price
         if revenue_amount > 0:
             pending_receivables.append({'payment_day': day + customer_credit, 'amount': revenue_amount})
             
-        # 3. Handle Arrivals
+        # 4. Handle Arrivals
         for o in list(pipeline_orders):
             if o['delivery_day'] == day:
                 inventory += o['qty']
             
-        # 4. Ordering (ROP)
+        # 5. Ordering Logic (ROP)
         current_pipeline = sum(o['qty'] for o in pipeline_orders if o['delivery_day'] > day)
         if (inventory + current_pipeline) <= rop:
             delivery_day = day + lead_time
@@ -75,17 +76,19 @@ def run_simulation():
             })
             total_ordering_costs += order_cost_fixed
             
-        # 5. Financial Settlement (Trade focus)
+        # 6. Financial Settlement
         receivable_today = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
         payable_today = sum(o['payable_amount'] for o in pipeline_orders if o['payment_day'] == day)
         cash_balance += (receivable_today - payable_today)
         
-        # 6. Operational Tracking
+        # 7. Operational Tracking
         current_day_holding = inventory * daily_holding_rate
         total_holding_costs += current_day_holding
         
+        # --- APPENDING TO HISTORY ---
         history.append({
             "Day": day,
+            "Demand": daily_demand, # Added demand column
             "Inventory": inventory,
             "Receivable": receivable_today,
             "Payable": payable_today,
@@ -108,28 +111,29 @@ m2.metric("Stock-out Days", f"{df_res['Stockout'].sum()} days")
 m3.metric("Total Holding Cost", f"${total_hold:,.2f}")
 m4.metric("Total Ordering Cost", f"${total_order:,.2f}")
 
-st.write("") # Padding
+st.write("") 
 
 # --- Full Width Inventory Graph ---
-with st.container():
-    st.subheader("Inventory Levels over Time")
-    fig_inv = px.line(df_res, x="Day", y="Inventory", 
-                      line_shape="hv", 
-                      color_discrete_sequence=['#0047AB'],
-                      height=400)
-    fig_inv.add_hline(y=rop, line_dash="dot", line_color="red", annotation_text="Reorder Point")
-    st.plotly_chart(fig_inv, use_container_width=True)
-
-st.write("") # Padding
+st.subheader("Inventory Levels over Time")
+fig_inv = px.line(df_res, x="Day", y="Inventory", 
+                  line_shape="hv", 
+                  color_discrete_sequence=['#0047AB'],
+                  height=400)
+fig_inv.add_hline(y=rop, line_dash="dot", line_color="red", annotation_text="Reorder Point")
+st.plotly_chart(fig_inv, use_container_width=True)
 
 # --- Full Width Cash Flow Graph ---
-with st.container():
-    st.subheader("Cumulative Trade Cash Position")
-    fig_cash = px.area(df_res, x="Day", y="Cash_Balance", 
-                       color_discrete_sequence=['#2E8B57'],
-                       height=400)
-    st.plotly_chart(fig_cash, use_container_width=True)
+st.subheader("Cumulative Trade Cash Position")
+fig_cash = px.area(df_res, x="Day", y="Cash_Balance", 
+                   color_discrete_sequence=['#2E8B57'],
+                   height=400)
+st.plotly_chart(fig_cash, use_container_width=True)
 
 # --- Data Log ---
-with st.expander("View Daily Simulation Logs"):
-    st.dataframe(df_res, use_container_width=True, hide_index=True)
+st.subheader("📋 Daily Simulation Logs")
+# The Demand column is now included in the dataframe display
+st.dataframe(
+    df_res[["Day", "Demand", "Inventory", "Receivable", "Payable", "Cash_Balance", "Daily_Holding_Cost", "Stockout"]], 
+    use_container_width=True, 
+    hide_index=True
+)
