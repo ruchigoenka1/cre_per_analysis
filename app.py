@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import math
 
 # Professional wide layout configuration
@@ -19,11 +20,12 @@ with st.sidebar:
     
     st.subheader("Cost & Demand Inputs")
     avg_demand = st.number_input("Avg. Daily Demand", value=20)
-    std_demand = st.number_input("Demand Variability (Std Dev)", value=5)
+    std_demand = st.number_input("Demand Variability", value=5)
     lead_time = st.number_input("Lead Time (Days)", value=7)
     unit_cost = st.number_input("Unit Cost ($)", value=50)
     selling_price = st.number_input("Selling Price ($)", value=90)
-    order_cost_fixed = st.number_input("Ordering Cost (per order) ($)", value=150)
+    order_cost_fixed = st.number_input("Ordering Cost ($)", value=150)
+    # Annual percentage based on user summary preference
     holding_cost_pct = st.number_input("Annual Holding Cost (%)", value=20.0) / 100
     opp_cost_pct = st.number_input("Cost of Capital / Interest (%)", value=12.0) / 100
     
@@ -32,21 +34,20 @@ with st.sidebar:
     customer_credit = st.number_input("Customer Credit (Days)", value=15)
     duration = st.number_input("Simulation Duration (Days)", value=180)
 
-# --- Advanced EOQ Calculations ---
+# --- Financial & EOQ Math ---
 annual_demand = avg_demand * 365
-# 1. Physical Holding Cost
 h_physical = unit_cost * holding_cost_pct
+# Physical EOQ based on standard storage costs
 eoq_physical = math.sqrt((2 * annual_demand * order_cost_fixed) / h_physical)
 
-# 2. Financial/Credit-Adjusted EOQ
+# Financial EOQ adjusted for trade credit gap
 daily_interest_rate = opp_cost_pct / 365
 credit_gap_days = customer_credit - supplier_credit
 credit_impact_per_unit = unit_cost * (daily_interest_rate * credit_gap_days * 365)
-h_financial = h_physical + (unit_cost * opp_cost_pct) + credit_impact_per_unit
-h_financial = max(h_financial, 0.01) # Prevent division by zero
+h_financial = max(0.01, h_physical + (unit_cost * opp_cost_pct) + credit_impact_per_unit)
 eoq_financial = math.sqrt((2 * annual_demand * order_cost_fixed) / h_financial)
 
-# --- Cost Comparison Logic ---
+# Cost comparison logic
 def calc_total_annual_cost(q, h_val):
     annual_holding = (q / 2) * h_val
     annual_ordering = (annual_demand / q) * order_cost_fixed
@@ -58,13 +59,14 @@ savings = cost_current - cost_eoq
 
 # --- Simulation Engine ---
 def run_simulation():
+    # Starting balance logic: 1.25 * production trigger
     inventory = int(1.25 * rop)
     cash_balance, ar_balance, ap_balance = 0, 0, 0
     pipeline_orders, pending_receivables, history = [], [], []
     daily_holding_rate = h_physical / 365
     
     for day in range(duration):
-        # 1. MORNING: Shipments arrive (Assumed at start of day)
+        # 1. MORNING: Shipments arrive first (User assumption)
         for o in list(pipeline_orders):
             if o['delivery_day'] == day:
                 inventory += o['qty']
@@ -87,39 +89,31 @@ def run_simulation():
         current_pipeline = sum(o['qty'] for o in pipeline_orders if o['delivery_day'] > day)
         if (inventory + current_pipeline) <= rop:
             delivery_day = day + lead_time
-            payment_day = delivery_day + supplier_credit
             pipeline_orders.append({
                 'delivery_day': delivery_day, 
                 'qty': manual_order_qty, 
-                'payment_day': payment_day,
+                'payment_day': delivery_day + supplier_credit,
                 'payable_amount': manual_order_qty * unit_cost
             })
             
         # 5. Settlement (Cash Movements)
         payment_received = sum(r['amount'] for r in pending_receivables if r['payment_day'] == day)
         ar_balance -= payment_received
-        
         payment_made = sum(o['payable_amount'] for o in pipeline_orders if o['payment_day'] == day)
         ap_balance -= payment_made
-        
         cash_balance += (payment_received - payment_made)
         
         # Financial Health Metrics
-        inventory_working_capital = inventory * unit_cost
-        net_working_capital = ar_balance + inventory_working_capital - ap_balance
+        inv_working_capital = inventory * unit_cost
+        net_working_capital = ar_balance + inv_working_capital - ap_balance
         
         history.append({
-            "Day": day,
-            "Demand": daily_demand,
-            "Inventory": inventory,
-            "Outstanding AR": ar_balance,
-            "Outstanding AP": ap_balance,
+            "Day": day, "Demand": daily_demand, "Inventory": inventory,
+            "Outstanding AR": ar_balance, "Outstanding AP": ap_balance,
             "Net Working Capital": net_working_capital,
-            "Inventory Working Capital": inventory_working_capital,
-            "Payment Received": payment_received,
-            "Payment Made": payment_made,
-            "Cash Balance": cash_balance,
-            "Daily Holding Cost": inventory * daily_holding_rate,
+            "Inventory Working Capital": inv_working_capital,
+            "Payment Received": payment_received, "Payment Made": payment_made,
+            "Cash Balance": cash_balance, "Daily Holding Cost": inventory * daily_holding_rate,
             "Stockout": stock_out_flag
         })
         
@@ -128,14 +122,15 @@ def run_simulation():
 df_res, total_ordering_cost = run_simulation()
 total_holding_cost = df_res['Daily Holding Cost'].sum()
 
-# --- DASHBOARD UI ---
+# --- DASHBOARD UI (Reference: Screenshot 2026-05-13 at 5.24.36 PM.jpg & 6.14.09 PM.png) ---
 st.title("Inventory Diagnostics & Working Capital Dashboard")
 
 # Row 1: Inventory KPIs
 st.subheader("Inventory KPIs")
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Stockout Days", f"{df_res['Stockout'].sum()}")
-k2.metric("Average Age of Inventory", f"{(df_res['Inventory'].mean() / avg_demand):.1f}")
+avg_age = (df_res['Inventory'].mean() / avg_demand)
+k2.metric("Average Age of Inventory", f"{avg_age:.1f}")
 k3.metric("Average Inventory", f"{df_res['Inventory'].mean():.1f}")
 k4.metric("Avg Net Working Capital", f"${df_res['Net Working Capital'].mean():,.1f}")
 k5.metric("Avg Inv Working Capital", f"${df_res['Inventory Working Capital'].mean():,.1f}")
@@ -148,15 +143,7 @@ a2.metric("Peak AR Exposure", f"${df_res['Outstanding AR'].max():,.1f}")
 a3.metric("Avg Outstanding AP", f"${df_res['Outstanding AP'].mean():,.1f}")
 a4.metric("Peak AP Balance", f"${df_res['Outstanding AP'].max():,.1f}")
 
-# Row 3: Inventory Range & Costs
-st.subheader("Inventory Range & Costs")
-r1, r2, r3, r4 = st.columns(4)
-r1.metric("Min Inventory", f"{df_res['Inventory'].min():.1f}")
-r2.metric("Max Inventory", f"{df_res['Inventory'].max():.1f}")
-r3.metric("Total Holding Cost", f"${total_holding_cost:,.0f}")
-r4.metric("Total Ordering Cost", f"${total_ordering_cost:,.0f}")
-
-# Row 4: EOQ & Financial Savings
+# Row 3: EOQ & Savings Analysis
 st.subheader("EOQ and Savings Analysis")
 e1, e2, e3, e4 = st.columns(4)
 e1.metric("Physical EOQ", f"{int(eoq_physical)}")
@@ -166,25 +153,49 @@ e4.metric("Net Credit Gap", f"{credit_gap_days} Days", delta=credit_gap_days, de
 
 st.divider()
 
-# --- Visual Analysis ---
-st.subheader("Visual Analysis")
+# --- Cash Flow & Lifecycle Analysis (Reference: Screenshot 2026-05-14 at 8.33.30 AM.png) ---
+st.subheader("Cash Flow & Lifecycle Analysis")
+st.markdown("**Inventory Lifecycle: Where is the value?**")
 
-# Inventory Levels
+days_in_store = avg_age
+total_lifecycle = lead_time + days_in_store + customer_credit
+payment_to_supplier = lead_time + supplier_credit
+
+lifecycle_data = [
+    dict(Task="Physical & Financial Flow", Start=0, Finish=lead_time, Phase="1. In-Transit"),
+    dict(Task="Physical & Financial Flow", Start=lead_time, Finish=lead_time + days_in_store, Phase="2. In-Store"),
+    dict(Task="Physical & Financial Flow", Start=lead_time + days_in_store, Finish=total_lifecycle, Phase="3. Receivable")
+]
+fig_life = px.timeline(pd.DataFrame(lifecycle_data), x_start="Start", x_end="Finish", y="Task", color="Phase",
+                       color_discrete_map={"1. In-Transit": "#FFA500", "2. In-Store": "#2E8B57", "3. Receivable": "#1E90FF"},
+                       height=300)
+
+fig_life.add_vline(x=payment_to_supplier, line_dash="dash", line_color="red", 
+                   annotation_text=f"PAYMENT TO SUPPLIER (Day {payment_to_supplier:.1f})")
+fig_life.add_vline(x=total_lifecycle, line_dash="dot", line_color="yellow", 
+                   annotation_text=f"CASH FROM CUSTOMER (Day {total_lifecycle:.1f})", annotation_position="bottom right")
+fig_life.update_yaxes(autorange="reversed")
+st.plotly_chart(fig_life, use_container_width=True)
+
+cash_gap = total_lifecycle - payment_to_supplier
+st.info(f"**Interpretation:** Your current Cash Gap is **{cash_gap:.1f} days**. "
+        f"{'You are self-financing during this period.' if cash_gap > 0 else 'Suppliers are effectively financing your growth.'}")
+
+st.divider()
+
+# --- Visual Analysis (Reference: Screenshot 2026-05-13 at 5.26.10 PM.png & 5.32.55 PM.png) ---
+st.subheader("Visual Analysis")
 fig_inv = px.line(df_res, x="Day", y="Inventory", title="Inventory Levels with ROP and Stockout Indicators", 
                   height=600, color_discrete_sequence=['#0047AB'])
 fig_inv.add_hline(y=rop, line_dash="dash", line_color="red", annotation_text=f"ROP: {rop}")
 
-# Add Stockout markers at the bottom for visibility
 stockouts = df_res[df_res['Stockout'] == 1]
 if not stockouts.empty:
+    # Plot markers slightly above zero for visibility
     fig_inv.add_scatter(x=stockouts["Day"], y=[5] * len(stockouts), mode="markers", 
                         name="Stockout Event", marker=dict(color="red", size=15, symbol="x"))
+
 st.plotly_chart(fig_inv, use_container_width=True)
 
-# Working Capital Trend
-st.plotly_chart(px.area(df_res, x="Day", y="Net Working Capital", title="Net Working Capital Trend", 
-                        height=400, color_discrete_sequence=['#2E8B57']), use_container_width=True)
-
-# Detailed Ledger
 with st.expander("Detailed Daily Transaction Ledger"):
     st.dataframe(df_res, use_container_width=True, hide_index=True)
